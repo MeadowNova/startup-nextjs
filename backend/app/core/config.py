@@ -6,7 +6,8 @@ Handles environment variables, API keys, and application settings
 import os
 from typing import Optional, List
 from pathlib import Path
-from pydantic import BaseSettings, Field, validator
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings
 import structlog
 
 logger = structlog.get_logger()
@@ -98,35 +99,40 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         case_sensitive = False
     
-    @validator("database_url")
+    @field_validator("database_url")
+    @classmethod
     def validate_database_url(cls, v):
         """Validate database URL format"""
-        if not v.startswith(("postgresql://", "postgres://")):
-            raise ValueError("Database URL must be a PostgreSQL connection string")
+        if not v.startswith(("postgresql://", "postgres://", "sqlite://", "sqlite+aiosqlite://")):
+            raise ValueError("Database URL must be a PostgreSQL or SQLite connection string")
         return v
-    
-    @validator("openai_api_key")
+
+    @field_validator("openai_api_key")
+    @classmethod
     def validate_openai_key(cls, v):
         """Validate OpenAI API key format"""
         if not v.startswith("sk-"):
             raise ValueError("OpenAI API key must start with 'sk-'")
         return v
-    
-    @validator("cors_origins", pre=True)
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
     def parse_cors_origins(cls, v):
         """Parse CORS origins from string or list"""
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]
         return v
-    
-    @validator("allowed_file_types", pre=True)
+
+    @field_validator("allowed_file_types", mode="before")
+    @classmethod
     def parse_allowed_file_types(cls, v):
         """Parse allowed file types from string or list"""
         if isinstance(v, str):
             return [file_type.strip() for file_type in v.split(",")]
         return v
-    
-    @validator("temp_dir")
+
+    @field_validator("temp_dir")
+    @classmethod
     def create_temp_dir(cls, v):
         """Ensure temp directory exists"""
         temp_path = Path(v)
@@ -185,7 +191,7 @@ class DevelopmentSettings(Settings):
     """Development-specific settings"""
     debug: bool = True
     log_level: str = "DEBUG"
-    cors_origins: List[str] = ["*"]  # Allow all origins in development
+    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:8000", "*"]  # Allow all origins in development
 
 
 class ProductionSettings(Settings):
@@ -194,7 +200,8 @@ class ProductionSettings(Settings):
     log_level: str = "INFO"
     workers: int = 4
     
-    @validator("secret_key")
+    @field_validator("secret_key")
+    @classmethod
     def validate_production_secret_key(cls, v):
         """Ensure secret key is secure in production"""
         if len(v) < 32:

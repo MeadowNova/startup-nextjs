@@ -9,6 +9,9 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import structlog
+import fitz  # PyMuPDF
+from pdf2image import convert_from_path
+from PIL import Image
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter, A4
@@ -69,21 +72,429 @@ class PDFReconstructor:
                     
         except Exception as e:
             logger.warning("Could not register custom fonts, using defaults", error=str(e))
-    
-    async def create_optimized_resume_pdf(
-        self, 
-        markdown_content: str, 
+
+    def pdf_to_text(self, pdf_path: Path) -> str:
+        """
+        Extract plain text from PDF using PyMuPDF
+        Based on reference.md algorithm
+
+        Args:
+            pdf_path: Path to the PDF file
+
+        Returns:
+            Extracted text content
+        """
+        try:
+            logger.info("Extracting text from PDF", pdf_path=str(pdf_path))
+
+            # Open PDF document
+            doc = fitz.open(pdf_path)
+
+            # Extract text from all pages
+            text_content = []
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                text = page.get_text()
+                if text.strip():  # Only add non-empty pages
+                    text_content.append(text)
+
+            doc.close()
+
+            # Join all pages with double newlines
+            full_text = "\n\n".join(text_content)
+
+            logger.info(
+                "PDF text extraction completed",
+                pages=len(text_content),
+                characters=len(full_text)
+            )
+
+            return full_text
+
+        except Exception as e:
+            logger.error("Failed to extract text from PDF", error=str(e), pdf_path=str(pdf_path))
+            raise
+
+    def first_page_to_png(self, pdf_path: Path, dpi: int = 150) -> Path:
+        """
+        Convert first page of PDF to PNG image for layout analysis
+        Based on reference.md algorithm
+
+        Args:
+            pdf_path: Path to the PDF file
+            dpi: Resolution for image conversion (default 150)
+
+        Returns:
+            Path to the generated PNG image
+        """
+        try:
+            logger.info("Converting first page to PNG", pdf_path=str(pdf_path), dpi=dpi)
+
+            # Convert first page to image
+            images = convert_from_path(
+                pdf_path,
+                dpi=dpi,
+                first_page=1,
+                last_page=1,
+                fmt='PNG'
+            )
+
+            if not images:
+                raise ValueError("No images generated from PDF")
+
+            # Save to temporary file
+            png_path = self.temp_dir / f"page_{pdf_path.stem}_{dpi}dpi.png"
+            images[0].save(png_path, "PNG")
+
+            logger.info(
+                "PNG conversion completed",
+                png_path=str(png_path),
+                image_size=images[0].size
+            )
+
+            return png_path
+
+        except Exception as e:
+            logger.error("Failed to convert PDF to PNG", error=str(e), pdf_path=str(pdf_path))
+            raise
+
+    def reconstruct_pdf_with_smoldocling(
+        self,
+        optimized_markdown: str,
         layout_coords: Dict,
         output_filename: Optional[str] = None
     ) -> Path:
         """
-        Create optimized resume PDF with preserved layout
-        
+        Reconstruct PDF using SmolDocling layout coordinates
+        This is the core layout-preserving algorithm
+
+        Args:
+            optimized_markdown: Optimized resume content in markdown
+            layout_coords: Layout coordinates from SmolDocling
+            output_filename: Optional custom filename
+
+        Returns:
+            Path to the generated PDF file
+        """
+        try:
+            # Generate output path
+            if not output_filename:
+                output_filename = f"optimized_resume_{hash(optimized_markdown)}.pdf"
+
+            output_path = self.temp_dir / output_filename
+
+            # Parse markdown into sections
+            sections = self._parse_markdown_sections(optimized_markdown)
+
+            # Get image size for coordinate conversion
+            image_size = layout_coords.get('image_size', (612, 792))
+            text_blocks = layout_coords.get('text_blocks', [])
+
+            # Create PDF with ReportLab
+            c = canvas.Canvas(str(output_path), pagesize=self.default_pagesize)
+
+            # Map sections to layout blocks and draw
+            self._draw_sections_with_layout(c, sections, text_blocks, image_size)
+
+            # Save PDF
+            c.save()
+
+            logger.info(
+                "PDF reconstruction completed",
+                output_path=str(output_path),
+                sections_count=len(sections),
+                blocks_count=len(text_blocks)
+            )
+
+            return output_path
+
+        except Exception as e:
+            logger.error("PDF reconstruction failed", error=str(e))
+            # Fallback to simple layout
+            return self._create_fallback_pdf(optimized_markdown, output_filename)
+
+    def _parse_markdown_sections(self, markdown: str) -> Dict[str, str]:
+        """Parse markdown content into resume sections"""
+        sections = {}
+        current_section = "header"
+        current_content = []
+
+        lines = markdown.split('\n')
+
+        for line in lines:
+            line = line.strip()
+
+            # Detect section headers
+            if line.startswith('# '):
+                # Save previous section
+                if current_content:
+                    sections[current_section] = '\n'.join(current_content).strip()
+
+                # Start new section
+                current_section = "header"
+                current_content = [line[2:]]  # Remove '# '
+
+            elif line.startswith('## '):
+                # Save previous section
+                if current_content:
+                    sections[current_section] = '\n'.join(current_content).strip()
+
+                # Determine section type
+                section_title = line[3:].lower()
+                if 'summary' in section_title or 'profile' in section_title:
+                    current_section = "summary"
+                elif 'experience' in section_title or 'work' in section_title:
+                    current_section = "experience"
+                elif 'skill' in section_title:
+                    current_section = "skills"
+                elif 'education' in section_title:
+                    current_section = "education"
+                else:
+                    current_section = "other"
+
+                current_content = [line[3:]]  # Remove '## '
+
+            else:
+                if line:  # Skip empty lines
+                    current_content.append(line)
+
+        # Save final section
+        if current_content:
+            sections[current_section] = '\n'.join(current_content).strip()
+
+        return sections
+
+    def _draw_sections_with_layout(
+        self,
+        canvas_obj,
+        sections: Dict[str, str],
+        text_blocks: List[Dict],
+        image_size: Tuple[int, int]
+    ):
+        """Draw sections using SmolDocling layout coordinates"""
+
+        # Convert image coordinates to PDF coordinates
+        img_width, img_height = image_size
+        pdf_width, pdf_height = self.default_pagesize
+
+        # Scale factors for coordinate conversion
+        x_scale = pdf_width / img_width
+        y_scale = pdf_height / img_height
+
+        # Map sections to blocks
+        section_mapping = {
+            'header': ['header', 'name', 'contact'],
+            'summary': ['summary', 'profile', 'objective'],
+            'experience': ['experience', 'work', 'employment'],
+            'skills': ['skills', 'technical', 'competencies'],
+            'education': ['education', 'academic', 'qualifications']
+        }
+
+        for section_name, content in sections.items():
+            # Find matching text block
+            matching_block = None
+            for block in text_blocks:
+                block_type = block.get('type', '').lower()
+                for mapped_type in section_mapping.get(section_name, [section_name]):
+                    if mapped_type in block_type:
+                        matching_block = block
+                        break
+                if matching_block:
+                    break
+
+            if matching_block:
+                # Get coordinates
+                bbox = matching_block.get('bbox', {})
+                x = bbox.get('x', 50) * x_scale
+                y = (img_height - bbox.get('y', 100) - bbox.get('height', 50)) * y_scale  # Flip Y coordinate
+                width = bbox.get('width', 500) * x_scale
+                height = bbox.get('height', 50) * y_scale
+
+                # Draw content in the specified area
+                self._draw_text_in_area(canvas_obj, content, x, y, width, height, section_name)
+            else:
+                # Fallback positioning
+                logger.warning(f"No layout block found for section: {section_name}")
+
+    def _draw_text_in_area(
+        self,
+        canvas_obj,
+        text: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        section_type: str
+    ):
+        """Draw text within specified area with appropriate formatting"""
+
+        # Choose font based on section type
+        if section_type == 'header':
+            font_name, font_size = self.default_fonts['header']
+        elif section_type in ['summary', 'experience']:
+            font_name, font_size = self.default_fonts['normal']
+        else:
+            font_name, font_size = self.default_fonts['normal']
+
+        # Set font
+        canvas_obj.setFont(font_name, font_size)
+
+        # Simple text wrapping and drawing
+        lines = self._wrap_text(text, width, font_name, font_size)
+
+        current_y = y + height - font_size  # Start from top of area
+        line_height = font_size * 1.2
+
+        for line in lines:
+            if current_y < y:  # Don't draw below the area
+                break
+            canvas_obj.drawString(x, current_y, line)
+            current_y -= line_height
+
+    def _wrap_text(self, text: str, max_width: float, font_name: str, font_size: int) -> List[str]:
+        """Simple text wrapping for PDF content"""
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        words = text.split()
+        lines = []
+        current_line = []
+
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            if stringWidth(test_line, font_name, font_size) <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                    current_line = [word]
+                else:
+                    # Word is too long, add it anyway
+                    lines.append(word)
+
+        if current_line:
+            lines.append(' '.join(current_line))
+
+        return lines
+
+    def _create_fallback_pdf(self, markdown_content: str, output_filename: Optional[str] = None) -> Path:
+        """Create a clean, professional PDF when layout extraction fails"""
+        try:
+            if not output_filename:
+                output_filename = f"fallback_resume_{hash(markdown_content)}.pdf"
+
+            output_path = self.temp_dir / output_filename
+
+            # Create professional layout with custom styles
+            doc = SimpleDocTemplate(
+                str(output_path),
+                pagesize=self.default_pagesize,
+                rightMargin=self.margin,
+                leftMargin=self.margin,
+                topMargin=self.margin,
+                bottomMargin=self.margin
+            )
+
+            # Create custom styles for professional appearance
+            styles = getSampleStyleSheet()
+
+            # Custom header style
+            header_style = ParagraphStyle(
+                'CustomHeader',
+                parent=styles['Title'],
+                fontSize=18,
+                spaceAfter=20,
+                alignment=TA_CENTER,
+                textColor=black
+            )
+
+            # Custom section header style
+            section_style = ParagraphStyle(
+                'CustomSection',
+                parent=styles['Heading2'],
+                fontSize=14,
+                spaceAfter=10,
+                spaceBefore=15,
+                textColor=black,
+                borderWidth=1,
+                borderColor=black,
+                borderPadding=5
+            )
+
+            # Custom body style
+            body_style = ParagraphStyle(
+                'CustomBody',
+                parent=styles['Normal'],
+                fontSize=11,
+                spaceAfter=8,
+                alignment=TA_LEFT,
+                leftIndent=10
+            )
+
+            story = []
+
+            # Parse and format markdown content
+            sections = self._parse_markdown_sections(markdown_content)
+
+            for section_name, content in sections.items():
+                if section_name == 'header':
+                    # Professional header
+                    story.append(Paragraph(content, header_style))
+                    story.append(Spacer(1, 20))
+                else:
+                    # Section header with professional styling
+                    story.append(Paragraph(section_name.title(), section_style))
+
+                    # Format content with bullet points and proper spacing
+                    formatted_content = self._format_section_content(content)
+                    story.append(Paragraph(formatted_content, body_style))
+                    story.append(Spacer(1, 15))
+
+            doc.build(story)
+
+            logger.info("Professional fallback PDF created successfully", output_path=str(output_path))
+            return output_path
+
+        except Exception as e:
+            logger.error("Fallback PDF creation failed", error=str(e))
+            raise
+
+    def _format_section_content(self, content: str) -> str:
+        """Format section content for professional appearance"""
+        lines = content.split('\n')
+        formatted_lines = []
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Convert markdown bullets to HTML bullets
+            if line.startswith('- ') or line.startswith('* '):
+                line = f"• {line[2:]}"
+            elif line.startswith('  - ') or line.startswith('  * '):
+                line = f"  ◦ {line[4:]}"
+
+            # Bold text formatting
+            line = line.replace('**', '<b>').replace('**', '</b>')
+
+            formatted_lines.append(line)
+
+        return '<br/>'.join(formatted_lines)
+
+    async def create_optimized_resume_pdf(
+        self,
+        markdown_content: str,
+        layout_coords: Dict,
+        output_filename: Optional[str] = None
+    ) -> Path:
+        """
+        Create optimized resume PDF with preserved layout using SmolDocling coordinates
+
         Args:
             markdown_content: Optimized resume content in markdown
-            layout_coords: Layout coordinates from GPT-4o Vision
+            layout_coords: Layout coordinates from SmolDocling
             output_filename: Optional custom filename
-            
+
         Returns:
             Path: Path to generated PDF file
         """
