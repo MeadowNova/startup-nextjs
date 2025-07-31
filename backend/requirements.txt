@@ -10,13 +10,18 @@ alembic==1.13.2
 
 # PDF Processing (from reference.md)
 PyMuPDF==1.24.10
-pdf2image==3.1.0
+pdf2image==1.17.0
 Pillow==10.4.0
 reportlab==4.2.2
 
 # AI Processing
 openai==1.51.0
 tiktoken==0.7.0
+
+# Hugging Face and Document Layout Analysis
+transformers==4.46.2
+torch==2.5.1
+accelerate==1.1.1
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0
