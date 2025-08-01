@@ -120,7 +120,12 @@ def test_pdf_reconstructor():
     """
     
     sections = pdf_reconstructor._parse_markdown_sections(sample_markdown)
-    print(f"📝 Parsed {len(sections)} sections: {list(sections.keys())}")
+    if isinstance(sections, dict):
+        print(f"📝 Parsed {len(sections)} sections: {list(sections.keys())}")
+    elif isinstance(sections, list):
+        print(f"📝 Parsed {len(sections)} sections: {[s.get('type', 'unknown') for s in sections]}")
+    else:
+        print(f"📝 Parsed sections: {type(sections)}")
     
     # Test fallback layout creation
     mock_layout = {

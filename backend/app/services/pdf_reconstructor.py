@@ -506,7 +506,7 @@ class PDFReconstructor:
             output_path = self.temp_dir / output_filename
             
             # Parse markdown into sections
-            sections = self._parse_markdown_sections(markdown_content)
+            sections = self._parse_markdown_sections_structured(markdown_content)
             
             # Create PDF with layout coordinates
             self._create_pdf_with_layout(
@@ -568,10 +568,10 @@ class PDFReconstructor:
             logger.error("Cover letter PDF creation failed", error=str(e))
             raise ValueError(f"Cover letter PDF creation failed: {str(e)}")
     
-    def _parse_markdown_sections(self, markdown_content: str) -> List[Dict[str, Any]]:
+    def _parse_markdown_sections_structured(self, markdown_content: str) -> List[Dict[str, Any]]:
         """
         Parse markdown content into structured sections
-        
+
         Returns:
             List of section dictionaries with type, content, and formatting
         """

@@ -29,6 +29,7 @@ export default function Video() {
                     alt="video image"
                     className="object-cover"
                     fill
+                    sizes="(max-width: 768px) 100vw, (max-width: 1200px) 770px, 770px"
                   />
                   <div className="absolute top-0 right-0 flex h-full w-full items-center justify-center">
                     <button

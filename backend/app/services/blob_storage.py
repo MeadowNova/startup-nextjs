@@ -85,7 +85,36 @@ class BlobStorageService:
         except Exception as e:
             logger.error("File upload failed", error=str(e), file_path=str(file_path), blob_key=blob_key)
             raise ValueError(f"Upload failed: {str(e)}")
-    
+
+    async def upload_bytes(self, file_content: bytes, blob_key: str, content_type: str) -> str:
+        """
+        Upload bytes directly to blob storage
+
+        Args:
+            file_content: File content as bytes
+            blob_key: Unique key for the blob (e.g., "resumes/user123/resume.pdf")
+            content_type: MIME type of file
+
+        Returns:
+            str: Blob URL for the uploaded file
+
+        Raises:
+            ValueError: If upload fails
+        """
+        # Validate file type
+        if content_type not in self.supported_types:
+            raise ValueError(f"Unsupported file type: {content_type}")
+
+        try:
+            if self.blob_token:
+                return await self._upload_bytes_to_vercel_blob(file_content, blob_key, content_type)
+            else:
+                return await self._upload_bytes_to_local_storage(file_content, blob_key)
+
+        except Exception as e:
+            logger.error("Bytes upload failed", error=str(e), blob_key=blob_key, size=len(file_content))
+            raise ValueError(f"Upload failed: {str(e)}")
+
     async def _upload_to_vercel_blob(self, file_path: Path, blob_key: str, content_type: str) -> str:
         """Upload file to Vercel Blob Storage"""
         async with aiofiles.open(file_path, 'rb') as f:
@@ -127,7 +156,61 @@ class BlobStorageService:
                            file_hash=file_hash)
                 
                 return blob_url
-    
+
+    async def _upload_bytes_to_vercel_blob(self, file_content: bytes, blob_key: str, content_type: str) -> str:
+        """Upload bytes directly to Vercel Blob Storage"""
+        # Calculate file hash for integrity
+        file_hash = hashlib.sha256(file_content).hexdigest()
+
+        headers = {
+            'Authorization': f'Bearer {self.blob_token}',
+            'X-Content-Type': content_type,
+            'X-Add-Random-Suffix': '1'  # Prevent filename collisions
+        }
+
+        # Use multipart upload for larger files
+        data = aiohttp.FormData()
+        data.add_field('file', file_content, filename=blob_key, content_type=content_type)
+
+        async with aiohttp.ClientSession() as session:
+            async with session.put(
+                f"{self.base_url}/upload",
+                headers=headers,
+                data=data
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise ValueError(f"Blob upload failed: {response.status} - {error_text}")
+
+                result = await response.json()
+                blob_url = result.get('url')
+
+                if not blob_url:
+                    raise ValueError("No URL returned from blob storage")
+
+                logger.info("Bytes uploaded to blob storage",
+                           blob_key=blob_key,
+                           blob_url=blob_url,
+                           file_size=len(file_content),
+                           file_hash=file_hash)
+
+                return blob_url
+
+    async def _upload_bytes_to_local_storage(self, file_content: bytes, blob_key: str) -> str:
+        """Fallback: Upload bytes to local storage"""
+        # Create directory structure
+        local_path = self.local_storage_dir / blob_key
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write bytes to file
+        async with aiofiles.open(local_path, 'wb') as f:
+            await f.write(file_content)
+
+        # Return local file URL
+        blob_url = f"file://{local_path.absolute()}"
+        logger.info("Bytes uploaded to local storage", blob_key=blob_key, local_path=str(local_path))
+        return blob_url
+
     async def _upload_to_local_storage(self, file_path: Path, blob_key: str) -> str:
         """Fallback: Upload to local storage"""
         # Create directory structure

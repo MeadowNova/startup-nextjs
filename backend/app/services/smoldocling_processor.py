@@ -83,13 +83,13 @@ class SmolDoclingProcessor:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Create prompt for layout extraction
-            prompt = """Analyze this document image and extract the layout structure. 
-            Identify text blocks and their bounding box coordinates. 
+            # Create prompt for layout extraction with image placeholder
+            prompt = """<image>Analyze this document image and extract the layout structure.
+            Identify text blocks and their bounding box coordinates.
             Return the information in a structured format with coordinates for each text section."""
-            
-            # Process with model
-            inputs = self.processor(images=image, text=prompt, return_tensors="pt")
+
+            # Process with model - images should be a list
+            inputs = self.processor(images=[image], text=prompt, return_tensors="pt")
             
             # Move to GPU if available
             if torch.cuda.is_available():

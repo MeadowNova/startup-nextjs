@@ -30,3 +30,62 @@ yarn-error.log*
 
 # vercel
 .vercel
+
+# Backend Python
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.pyd
+backend/.Python
+backend/env/
+backend/venv/
+backend/.venv/
+backend/pip-log.txt
+backend/pip-delete-this-directory.txt
+backend/.tox/
+backend/.coverage
+backend/.pytest_cache/
+backend/htmlcov/
+
+# Backend Environment
+backend/.env
+backend/.env.local
+backend/.env.development
+backend/.env.production
+
+# Backend Database
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/resumeforge.db
+
+# Backend Storage (generated files)
+backend/storage/
+backend/temp/
+backend/uploads/
+
+# Backend Logs
+backend/logs/
+backend/*.log
+
+# Backend Models (if downloaded)
+backend/models/
+backend/.cache/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test files
+backend/test_*.pdf
+backend/sample_*.pdf
