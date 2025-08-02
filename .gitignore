@@ -1,0 +1,91 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+.vscode
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local env files
+.env*.local
+
+# vercel
+.vercel
+
+# Backend Python
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.pyd
+backend/.Python
+backend/env/
+backend/venv/
+backend/.venv/
+backend/pip-log.txt
+backend/pip-delete-this-directory.txt
+backend/.tox/
+backend/.coverage
+backend/.pytest_cache/
+backend/htmlcov/
+
+# Backend Environment
+backend/.env
+backend/.env.local
+backend/.env.development
+backend/.env.production
+
+# Backend Database
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/resumeforge.db
+
+# Backend Storage (generated files)
+backend/storage/
+backend/temp/
+backend/uploads/
+
+# Backend Logs
+backend/logs/
+backend/*.log
+
+# Backend Models (if downloaded)
+backend/models/
+backend/.cache/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test files
+backend/test_*.pdf
+backend/sample_*.pdf

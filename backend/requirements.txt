@@ -1,0 +1,48 @@
+# Core FastAPI
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+
+# Database
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+alembic==1.13.2
+
+# PDF Processing (from reference.md)
+PyMuPDF==1.24.10
+pdf2image==1.17.0
+Pillow==10.4.0
+reportlab==4.2.2
+
+# AI Processing
+openai==1.51.0
+tiktoken==0.7.0
+
+# Hugging Face and Document Layout Analysis
+transformers==4.46.2
+torch==2.5.1
+accelerate==1.1.1
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.1
+
+# File Storage & Processing
+aiofiles==24.1.0
+aiohttp==3.9.0
+python-magic==0.4.27
+
+# Configuration & Validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Monitoring & Logging
+structlog==24.4.0
+sentry-sdk[fastapi]==2.14.0
+
+# Development
+pytest==8.3.3
+pytest-asyncio==0.24.0
+black==24.8.0
+isort==5.13.2
