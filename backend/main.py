@@ -1,302 +1,273 @@
+#!/usr/bin/env python3
 """
-FastAPI Application Entry Point for ResumeForge
-Handles app factory, middleware, CORS, and routing setup
+Pixel-Perfect Resume Optimizer API
+Uses GPT-4o Vision for exact layout recreation with optimized content
+This is what you wanted - true layout preservation!
 """
 
-import logging
-import time
-from contextlib import asynccontextmanager
-from typing import Dict, Any
+import os
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Optional, Dict
 
-import structlog
-import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+import structlog
 
-from app.core.config import settings, validate_required_settings, log_settings_summary
-from app.database import engine, create_tables
-from app.api.v1 import api_router
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
+# Import our services
+from app.services.ai_processor import AIProcessor
+from app.services.pdf_reconstructor import PDFReconstructor
+from app.services.vision_layout_analyzer import VisionLayoutAnalyzer, PrecisePDFReconstructor
+from app.core.config import settings
 
 logger = structlog.get_logger()
 
+app = FastAPI(title="Pixel-Perfect Resume Optimizer", version="2.0.0")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+# Add CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global temp directory for files
+TEMP_DIR = Path("/tmp/pixel_perfect_resumes")
+TEMP_DIR.mkdir(exist_ok=True)
+
+# In-memory storage for processed files
+processed_files = {}
+
+
+@app.get("/health")
+async def health_check():
+    """Health check with vision model status"""
+    return {
+        "status": "healthy",
+        "openai_configured": bool(settings.openai_api_key and settings.openai_api_key.startswith("sk-")),
+        "model_text": settings.openai_model_text,
+        "model_vision": settings.openai_model_vision,
+        "pixel_perfect_enabled": True
+    }
+
+
+@app.post("/optimize")
+async def optimize_resume(
+    resume_file: UploadFile = File(..., description="Resume PDF file"),
+    job_description: str = Form(..., description="Job description text"),
+    job_title: Optional[str] = Form(None, description="Job title (optional)"),
+    company_name: Optional[str] = Form(None, description="Company name (optional)")
+):
     """
-    Application lifespan manager
-    Handles startup and shutdown events
+    Pixel-perfect resume optimization using GPT-4o Vision
+    Recreates exact layout with optimized content
     """
-    # Startup
-    logger.info("Starting ResumeForge application")
+    
+    session_id = str(uuid.uuid4())
+    logger.info("Starting pixel-perfect resume optimization", session_id=session_id)
     
     try:
-        # Validate configuration
-        validate_required_settings()
-        log_settings_summary()
+        # Step 1: Save uploaded file
+        resume_content = await resume_file.read()
+        temp_pdf_path = TEMP_DIR / f"{session_id}_original.pdf"
         
-        # Create database tables
-        await create_tables()
-        logger.info("Database tables created/verified")
+        with open(temp_pdf_path, 'wb') as f:
+            f.write(resume_content)
         
-        # Initialize services
-        logger.info("Application startup completed successfully")
+        logger.info("Resume file saved", session_id=session_id, size=len(resume_content))
+        
+        # Step 2: Extract text from PDF
+        pdf_reconstructor = PDFReconstructor()
+        resume_text = pdf_reconstructor.pdf_to_text(temp_pdf_path)
+        logger.info("Text extracted from PDF", session_id=session_id, text_length=len(resume_text))
+        
+        # Step 3: Convert to high-quality image for vision analysis
+        image_path = pdf_reconstructor.first_page_to_png(temp_pdf_path, dpi=300)  # High DPI for precision
+        logger.info("High-resolution image created", session_id=session_id, image_path=str(image_path))
+        
+        # Step 4: AI optimization
+        ai_processor = AIProcessor(settings.openai_api_key)
+        
+        # Optimize resume content
+        optimized_resume_markdown = await ai_processor.optimize_resume_text(
+            resume_text, job_description
+        )
+        logger.info("Resume optimization completed", session_id=session_id)
+        
+        # Generate cover letter
+        cover_letter_markdown = await ai_processor.generate_cover_letter(
+            optimized_resume_markdown, job_description, job_title, company_name
+        )
+        logger.info("Cover letter generation completed", session_id=session_id)
+        
+        # Step 5: GPT-4o Vision layout analysis
+        vision_analyzer = VisionLayoutAnalyzer(ai_processor.client)
+        layout_data = vision_analyzer.analyze_resume_layout(image_path)
+        logger.info("GPT-4o Vision layout analysis completed", session_id=session_id)
+        
+        # Step 6: Parse optimized content into sections
+        optimized_sections = _parse_markdown_to_sections(optimized_resume_markdown)
+        
+        # Step 7: Pixel-perfect PDF recreation
+        precise_reconstructor = PrecisePDFReconstructor(vision_analyzer)
+        
+        # Create pixel-perfect resume
+        pixel_perfect_resume_path = TEMP_DIR / f"{session_id}_pixel_perfect_resume.pdf"
+        precise_reconstructor.recreate_with_optimized_content(
+            original_image_path=image_path,
+            optimized_content=optimized_sections,
+            output_path=pixel_perfect_resume_path
+        )
+        
+        # Create cover letter (using standard layout since it's new)
+        cover_letter_path = TEMP_DIR / f"{session_id}_cover_letter.pdf"
+        pdf_reconstructor.markdown_to_pdf_with_layout(
+            markdown_content=cover_letter_markdown,
+            layout_coords={},  # Use clean layout for cover letter
+            output_filename=str(cover_letter_path),
+            document_type="cover_letter"
+        )
+        
+        logger.info("Pixel-perfect PDF recreation completed", session_id=session_id)
+        
+        # Step 8: Store file paths for download
+        processed_files[f"{session_id}_pixel_perfect_resume"] = pixel_perfect_resume_path
+        processed_files[f"{session_id}_cover_letter"] = cover_letter_path
+        processed_files[f"{session_id}_resume_md"] = optimized_resume_markdown
+        processed_files[f"{session_id}_cover_letter_md"] = cover_letter_markdown
+        
+        # Get AI processing metadata
+        ai_metadata = ai_processor.get_processing_metadata()
+        
+        # Clean up temp files
+        try:
+            temp_pdf_path.unlink(missing_ok=True)
+            image_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Failed to clean up temp files", error=str(e))
+        
+        return {
+            "session_id": session_id,
+            "status": "completed",
+            "method": "pixel_perfect_vision",
+            "downloads": {
+                "pixel_perfect_resume_pdf": f"/download/{session_id}_pixel_perfect_resume",
+                "cover_letter_pdf": f"/download/{session_id}_cover_letter",
+                "optimized_resume_markdown": f"/download/{session_id}_resume_md",
+                "cover_letter_markdown": f"/download/{session_id}_cover_letter_md"
+            },
+            "ai_processing": {
+                "used_fallback_resume": ai_metadata.get("used_fallback_resume", False),
+                "used_fallback_cover_letter": ai_metadata.get("used_fallback_cover_letter", False),
+                "model_used": ai_metadata.get("openai_model_text", "unknown"),
+                "vision_model": settings.openai_model_vision
+            },
+            "layout_analysis": {
+                "method": "gpt4o_vision",
+                "precision": "pixel_perfect",
+                "elements_detected": len(layout_data.get('elements', [])),
+                "fonts_detected": len(layout_data.get('fonts', []))
+            },
+            "message": "Pixel-perfect resume optimization completed! Exact layout preserved with optimized content."
+        }
         
     except Exception as e:
-        logger.error("Failed to start application", error=str(e))
-        raise
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down ResumeForge application")
-
-
-def create_app() -> FastAPI:
-    """
-    FastAPI application factory
-    
-    Returns:
-        FastAPI: Configured FastAPI application instance
-    """
-    
-    app = FastAPI(
-        title=settings.app_name,
-        version=settings.app_version,
-        description="AI-powered resume optimization platform that preserves original layout while optimizing content for ATS systems",
-        docs_url="/docs" if settings.debug else None,
-        redoc_url="/redoc" if settings.debug else None,
-        openapi_url="/openapi.json" if settings.debug else None,
-        lifespan=lifespan
-    )
-
-    # Initialize rate limiter
-    limiter = Limiter(key_func=get_remote_address)
-    app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-    # Add middleware
-    setup_middleware(app)
-
-    # Add exception handlers
-    setup_exception_handlers(app)
-    
-    # Include routers
-    app.include_router(api_router, prefix="/api/v1")
-    
-    # Add health check endpoint
-    @app.get("/health")
-    async def health_check() -> Dict[str, Any]:
-        """Health check endpoint"""
-        return {
-            "status": "healthy",
-            "app_name": settings.app_name,
-            "version": settings.app_version,
-            "environment": settings.environment,
-            "timestamp": time.time()
-        }
-    
-    @app.get("/")
-    async def root() -> Dict[str, str]:
-        """Root endpoint"""
-        return {
-            "message": f"Welcome to {settings.app_name} API",
-            "version": settings.app_version,
-            "docs": "/docs" if settings.debug else "Documentation disabled in production"
-        }
-    
-    return app
-
-
-def setup_middleware(app: FastAPI) -> None:
-    """
-    Configure application middleware
-    
-    Args:
-        app: FastAPI application instance
-    """
-    
-    # CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
-    )
-    
-    # Trusted host middleware (security)
-    if settings.is_production:
-        app.add_middleware(
-            TrustedHostMiddleware,
-            allowed_hosts=["*.vercel.app", "*.resumeforge.com", "localhost"]
-        )
-    
-    # Request logging middleware
-    @app.middleware("http")
-    async def log_requests(request: Request, call_next):
-        """Log all HTTP requests"""
-        start_time = time.time()
-        
-        # Log request
-        logger.info(
-            "Request started",
-            method=request.method,
-            url=str(request.url),
-            client_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent")
-        )
-        
-        # Process request
+        logger.error("Pixel-perfect optimization failed", session_id=session_id, error=str(e))
+        # Clean up on error
         try:
-            response = await call_next(request)
-            process_time = time.time() - start_time
+            temp_pdf_path.unlink(missing_ok=True)
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=f"Pixel-perfect processing failed: {str(e)}")
+
+
+@app.get("/download/{file_id}")
+async def download_file(file_id: str):
+    """Download processed files"""
+    
+    if file_id not in processed_files:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path_or_content = processed_files[file_id]
+    
+    # Handle markdown content (stored as string)
+    if file_id.endswith("_md"):
+        # Return markdown as text file
+        temp_md_path = TEMP_DIR / f"{file_id}.md"
+        with open(temp_md_path, 'w') as f:
+            f.write(file_path_or_content)
+        
+        filename = f"{file_id.replace('_md', '')}.md"
+        return FileResponse(
+            temp_md_path,
+            media_type="text/markdown",
+            filename=filename
+        )
+    
+    # Handle PDF files
+    if not Path(file_path_or_content).exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    
+    filename = f"{file_id.replace('_', '_')}.pdf"
+    return FileResponse(
+        file_path_or_content,
+        media_type="application/pdf",
+        filename=filename
+    )
+
+
+def _parse_markdown_to_sections(markdown_content: str) -> Dict[str, str]:
+    """Parse markdown content into sections for layout mapping"""
+    
+    sections = {}
+    current_section = "header"
+    current_content = []
+    
+    lines = markdown_content.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        
+        if line.startswith('# '):
+            # Main header
+            if current_content:
+                sections[current_section] = '\n'.join(current_content)
+            current_section = "header"
+            current_content = [line[2:]]  # Remove '# '
             
-            # Log response
-            logger.info(
-                "Request completed",
-                method=request.method,
-                url=str(request.url),
-                status_code=response.status_code,
-                process_time=round(process_time, 4)
-            )
+        elif line.startswith('## '):
+            # Section header
+            if current_content:
+                sections[current_section] = '\n'.join(current_content)
             
-            # Add process time header
-            response.headers["X-Process-Time"] = str(process_time)
-            return response
+            section_name = line[3:].lower()  # Remove '## '
+            if 'summary' in section_name or 'profile' in section_name:
+                current_section = "summary"
+            elif 'experience' in section_name or 'work' in section_name:
+                current_section = "experience"
+            elif 'skill' in section_name or 'technical' in section_name:
+                current_section = "skills"
+            elif 'education' in section_name or 'academic' in section_name:
+                current_section = "education"
+            else:
+                current_section = section_name.replace(' ', '_')
             
-        except Exception as e:
-            process_time = time.time() - start_time
-            logger.error(
-                "Request failed",
-                method=request.method,
-                url=str(request.url),
-                error=str(e),
-                process_time=round(process_time, 4)
-            )
-            raise
-
-
-def setup_exception_handlers(app: FastAPI) -> None:
-    """
-    Configure global exception handlers
+            current_content = []
+            
+        elif line:
+            current_content.append(line)
     
-    Args:
-        app: FastAPI application instance
-    """
+    # Add final section
+    if current_content:
+        sections[current_section] = '\n'.join(current_content)
     
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException):
-        """Handle HTTP exceptions"""
-        logger.warning(
-            "HTTP exception",
-            status_code=exc.status_code,
-            detail=exc.detail,
-            url=str(request.url)
-        )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "error": "HTTP Exception",
-                "detail": exc.detail,
-                "status_code": exc.status_code
-            }
-        )
-    
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        """Handle request validation errors"""
-        logger.warning(
-            "Validation error",
-            errors=exc.errors(),
-            url=str(request.url)
-        )
-        return JSONResponse(
-            status_code=422,
-            content={
-                "error": "Validation Error",
-                "detail": exc.errors(),
-                "status_code": 422
-            }
-        )
-    
-    @app.exception_handler(StarletteHTTPException)
-    async def starlette_exception_handler(request: Request, exc: StarletteHTTPException):
-        """Handle Starlette HTTP exceptions"""
-        logger.error(
-            "Starlette exception",
-            status_code=exc.status_code,
-            detail=exc.detail,
-            url=str(request.url)
-        )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "error": "Server Error",
-                "detail": exc.detail if settings.debug else "Internal server error",
-                "status_code": exc.status_code
-            }
-        )
-    
-    @app.exception_handler(Exception)
-    async def general_exception_handler(request: Request, exc: Exception):
-        """Handle all other exceptions"""
-        logger.error(
-            "Unhandled exception",
-            error=str(exc),
-            error_type=type(exc).__name__,
-            url=str(request.url),
-            exc_info=True
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Internal Server Error",
-                "detail": str(exc) if settings.debug else "An unexpected error occurred",
-                "status_code": 500
-            }
-        )
-
-
-# Create the FastAPI app instance
-app = create_app()
+    return sections
 
 
 if __name__ == "__main__":
-    """
-    Run the application with uvicorn
-    For development only - use proper ASGI server in production
-    """
-    uvicorn.run(
-        "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
-        log_level=settings.log_level.lower(),
-        workers=1 if settings.debug else settings.workers
-    )
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

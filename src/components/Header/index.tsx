@@ -9,6 +9,8 @@ import menuData from "./menuData";
 const Header = () => {
   // Navbar toggle
   const [navbarOpen, setNavbarOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
   const navbarToggleHandler = () => {
     setNavbarOpen(!navbarOpen);
   };
@@ -16,15 +18,23 @@ const Header = () => {
   // Sticky Navbar
   const [sticky, setSticky] = useState(false);
   const handleStickyNavbar = () => {
-    if (window.scrollY >= 80) {
+    if (typeof window !== 'undefined' && window.scrollY >= 80) {
       setSticky(true);
     } else {
       setSticky(false);
     }
   };
+
   useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+
     window.addEventListener("scroll", handleStickyNavbar);
-  });
+    return () => window.removeEventListener("scroll", handleStickyNavbar);
+  }, [mounted]);
 
   // submenu handler
   const [openIndex, setOpenIndex] = useState(-1);

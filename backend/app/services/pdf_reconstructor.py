@@ -31,6 +31,59 @@ class PDFReconstructor:
     PDF reconstruction service that preserves original layout
     Uses GPT-4o Vision coordinates and ReportLab for precise positioning
     """
+
+    def markdown_to_pdf_with_layout(
+        self,
+        markdown_content: str,
+        layout_coords: Optional[Dict] = None,
+        output_filename: Optional[str] = None,
+        document_type: str = "resume",
+    ) -> Path:
+        """
+        Backwards-compatible adapter for legacy callers expecting markdown_to_pdf_with_layout.
+        Delegates to the current implementation methods.
+
+        Args:
+            markdown_content: Content in Markdown
+            layout_coords: Layout coordinates dict; when None or empty, use fallback formatting
+            output_filename: Optional output filename
+            document_type: "resume" or "cover_letter"
+
+        Returns:
+            Path to generated PDF
+        """
+        try:
+            # Normalize layout coords
+            layout_coords = layout_coords or {}
+
+            # Choose path based on document type
+            if document_type == "resume":
+                # If we have layout sections/blocks, prefer reconstruction with layout
+                has_layout = bool(layout_coords.get("text_blocks") or layout_coords.get("sections"))
+                if has_layout:
+                    return self.reconstruct_pdf_with_smoldocling(
+                        optimized_markdown=markdown_content,
+                        layout_coords=layout_coords,
+                        output_filename=output_filename or f"optimized_resume_{hash(markdown_content)}.pdf",
+                    )
+                # Fallback to clean professional PDF
+                return self._create_fallback_pdf(
+                    markdown_content=markdown_content,
+                    output_filename=output_filename or f"fallback_resume_{hash(markdown_content)}.pdf",
+                )
+
+            # Cover letter path uses the professional fallback generator
+            return self._create_fallback_pdf(
+                markdown_content=markdown_content,
+                output_filename=output_filename or f"cover_letter_{hash(markdown_content)}.pdf",
+            )
+
+        except Exception as e:
+            logger.error("markdown_to_pdf_with_layout failed; using fallback", error=str(e))
+            return self._create_fallback_pdf(
+                markdown_content=markdown_content,
+                output_filename=output_filename or f"fallback_{document_type}_{hash(markdown_content)}.pdf",
+            )
     
     def __init__(self):
         """Initialize PDF reconstructor with default fonts and settings"""
@@ -190,6 +243,11 @@ class PDFReconstructor:
             image_size = layout_coords.get('image_size', (612, 792))
             text_blocks = layout_coords.get('text_blocks', [])
 
+            # If no layout blocks found, use fallback PDF creation for better results
+            if not text_blocks:
+                logger.info("No layout blocks found, using fallback PDF creation for better formatting")
+                return self._create_fallback_pdf(optimized_markdown, output_filename)
+
             # Create PDF with ReportLab
             c = canvas.Canvas(str(output_path), pagesize=self.default_pagesize)
 
@@ -290,6 +348,9 @@ class PDFReconstructor:
             'education': ['education', 'academic', 'qualifications']
         }
 
+        # Precompute available block types for diagnostics
+        available_block_types = [str(b.get('type', '')).lower() for b in text_blocks]
+
         for section_name, content in sections.items():
             # Find matching text block
             matching_block = None
@@ -313,8 +374,25 @@ class PDFReconstructor:
                 # Draw content in the specified area
                 self._draw_text_in_area(canvas_obj, content, x, y, width, height, section_name)
             else:
-                # Fallback positioning
-                logger.warning(f"No layout block found for section: {section_name}")
+                # Fallback positioning when no layout blocks are found
+                logger.warning(
+                    "No layout block found for section",
+                    section=section_name,
+                    available_layout_types=available_block_types[:10]  # cap for log brevity
+                )
+
+                # Use default positioning based on section order
+                section_order = ['header', 'summary', 'experience', 'skills', 'education', 'other']
+                section_index = section_order.index(section_name) if section_name in section_order else len(section_order)
+
+                # Default positioning
+                x = 50  # Left margin
+                y = pdf_height - 100 - (section_index * 120)  # Top margin with spacing
+                width = pdf_width - 100  # Full width minus margins
+                height = 100  # Default section height
+
+                # Draw content with fallback positioning
+                self._draw_text_in_area(canvas_obj, content, x, y, width, height, section_name)
 
     def _draw_text_in_area(
         self,
@@ -794,7 +872,7 @@ class PDFReconstructor:
         
         # Handle text wrapping for long content
         max_width = x2 - x1
-        wrapped_lines = self._wrap_text(text, max_width, canvas_obj)
+        wrapped_lines = self._wrap_text_with_canvas(text, max_width, canvas_obj)
         
         # Draw each line
         line_height = 14  # Approximate line height
@@ -823,8 +901,8 @@ class PDFReconstructor:
             self._fallback_y_offset = []
         self._fallback_y_offset.append(text)
     
-    def _wrap_text(self, text: str, max_width: float, canvas_obj: canvas.Canvas) -> List[str]:
-        """Wrap text to fit within specified width"""
+    def _wrap_text_with_canvas(self, text: str, max_width: float, canvas_obj: canvas.Canvas) -> List[str]:
+        """Wrap text to fit within specified width using canvas object"""
         words = text.split()
         lines = []
         current_line = []
@@ -849,43 +927,115 @@ class PDFReconstructor:
         return lines
     
     def _create_cover_letter_pdf(
-        self, 
-        sections: List[Dict], 
-        layout_coords: Dict, 
+        self,
+        sections: List[Dict],
+        layout_coords: Dict,
         output_path: Path
     ):
-        """Create cover letter PDF with simplified layout"""
+        """Create professional business letter PDF with proper formatting"""
+        from datetime import datetime
+
         page_dims = layout_coords.get('page_dimensions', {})
         page_width = page_dims.get('width', 612)
         page_height = page_dims.get('height', 792)
-        
+
         c = canvas.Canvas(str(output_path), pagesize=(page_width, page_height))
-        
-        # Simple top-down layout for cover letter
-        y_position = page_height - 100  # Start near top
-        
+
+        # Professional business letter layout
+        left_margin = 72  # 1 inch
+        right_margin = page_width - 72
+        top_margin = page_height - 72
+        line_height = 14
+        paragraph_spacing = 20
+
+        y_position = top_margin
+
+        # Date (right-aligned)
+        current_date = datetime.now().strftime("%B %d, %Y")
+        c.setFont("Helvetica", 11)
+        date_width = c.stringWidth(current_date, "Helvetica", 11)
+        c.drawString(right_margin - date_width, y_position, current_date)
+        y_position -= paragraph_spacing * 2
+
+        # Recipient Address (if available in sections)
+        recipient_section = next((s for s in sections if s.get('type') == 'recipient'), None)
+        if recipient_section:
+            c.setFont("Helvetica", 11)
+            recipient_lines = recipient_section['content'].split('\n')
+            for line in recipient_lines:
+                if line.strip():
+                    c.drawString(left_margin, y_position, line.strip())
+                    y_position -= line_height
+            y_position -= paragraph_spacing
+
+        # Salutation
+        c.setFont("Helvetica", 11)
+        c.drawString(left_margin, y_position, "Dear Hiring Manager,")
+        y_position -= paragraph_spacing * 1.5
+
+        # Letter body content
+        body_content = ""
         for section in sections:
-            content = section['content']
-            section_type = section['type']
-            
-            if section_type == 'cover_header':
-                c.setFont(*self.default_fonts['bold'])
-                y_position -= 30
-            else:
-                c.setFont(*self.default_fonts['normal'])
-                y_position -= 20
-            
-            # Wrap text for cover letter
-            wrapped_lines = self._wrap_text(content, page_width - 100, c)
-            
+            if section.get('type') not in ['recipient', 'salutation', 'signature']:
+                body_content += section['content'] + "\n\n"
+
+        # Process body paragraphs
+        paragraphs = [p.strip() for p in body_content.split('\n\n') if p.strip()]
+
+        for paragraph in paragraphs:
+            # Wrap paragraph text
+            max_width = right_margin - left_margin - 20
+            wrapped_lines = self._wrap_text_professional(paragraph, max_width, c)
+
             for line in wrapped_lines:
-                c.drawString(50, y_position, line)
-                y_position -= 15
-            
-            y_position -= 10  # Extra space between sections
-        
+                if y_position < 150:  # Check for page break
+                    c.showPage()
+                    y_position = top_margin
+
+                c.drawString(left_margin, y_position, line)
+                y_position -= line_height
+
+            y_position -= paragraph_spacing  # Space between paragraphs
+
+        # Professional closing
+        y_position -= paragraph_spacing
+        if y_position < 150:
+            c.showPage()
+            y_position = top_margin
+
+        c.drawString(left_margin, y_position, "Sincerely,")
+        y_position -= paragraph_spacing * 2
+
+        # Signature line
+        c.drawString(left_margin, y_position, "[Your Name]")
+
         c.showPage()
         c.save()
+
+    def _wrap_text_professional(self, text: str, max_width: float, canvas_obj) -> List[str]:
+        """Professional text wrapping for business letters"""
+        words = text.split()
+        lines = []
+        current_line = []
+
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            text_width = canvas_obj.stringWidth(test_line, "Helvetica", 11)
+
+            if text_width <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                    current_line = [word]
+                else:
+                    # Word is too long, force break
+                    lines.append(word)
+
+        if current_line:
+            lines.append(' '.join(current_line))
+
+        return lines
 
 
 # Singleton instance

@@ -63,59 +63,79 @@ class SmolDoclingProcessor:
     
     def extract_layout_coordinates(self, image_path: Path) -> Dict[str, Any]:
         """
-        Extract layout coordinates from document image
-        
+        Extract layout coordinates from document image using SmolDocling
+
         Args:
             image_path: Path to the document image
-            
+
         Returns:
             Dict containing layout coordinates and text blocks
         """
         if not TRANSFORMERS_AVAILABLE:
             raise RuntimeError("Transformers not available for SmolDocling")
-        
+
         # Load model if not already loaded
         self._load_model()
-        
+
         try:
             # Load and prepare image
             image = Image.open(image_path)
             if image.mode != 'RGB':
                 image = image.convert('RGB')
-            
-            # Create prompt for layout extraction with image placeholder
-            prompt = """<image>Analyze this document image and extract the layout structure.
-            Identify text blocks and their bounding box coordinates.
-            Return the information in a structured format with coordinates for each text section."""
 
-            # Process with model - images should be a list
-            inputs = self.processor(images=[image], text=prompt, return_tensors="pt")
-            
+            logger.info("Processing image with SmolDocling", image_size=image.size)
+
+            # Create proper message format according to SmolDocling documentation
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": "Convert this page to docling."}
+                    ]
+                },
+            ]
+
+            # Apply chat template
+            prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+
+            # Process inputs
+            inputs = self.processor(text=prompt, images=[image], return_tensors="pt")
+
             # Move to GPU if available
-            if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-            
-            # Generate response
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            inputs = inputs.to(device)
+
+            # Generate DocTags output
             with torch.no_grad():
-                outputs = self.model.generate(
+                generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=1000,
+                    max_new_tokens=8192,  # Increased for full document processing
                     do_sample=False,
-                    temperature=0.1
+                    temperature=0.0
                 )
-            
-            # Decode response
-            result = self.processor.decode(outputs[0], skip_special_tokens=True)
-            
-            # Parse the coordinates from the response
-            coordinates = self._parse_layout_response(result, image.size)
-            
+
+            # Decode only the generated part (skip prompt)
+            prompt_length = inputs.input_ids.shape[1]
+            trimmed_generated_ids = generated_ids[:, prompt_length:]
+
+            # Decode the DocTags response
+            doctags = self.processor.batch_decode(
+                trimmed_generated_ids,
+                skip_special_tokens=False,
+            )[0].lstrip()
+
+            logger.info("SmolDocling generated DocTags", doctags_length=len(doctags))
+
+            # Parse DocTags to extract layout coordinates
+            coordinates = self._parse_doctags_to_coordinates(doctags, image.size)
+
             logger.info(
                 "Layout extraction completed",
                 image_size=image.size,
                 blocks_found=len(coordinates.get('text_blocks', []))
             )
-            
+
             return coordinates
             
         except Exception as e:
@@ -249,7 +269,90 @@ class SmolDoclingProcessor:
             'image_size': image_size,
             'extraction_method': 'fallback'
         }
-    
+
+    def _parse_doctags_to_coordinates(self, doctags: str, image_size: Tuple[int, int]) -> Dict[str, Any]:
+        """
+        Parse DocTags format to extract layout coordinates and text blocks
+
+        Args:
+            doctags: DocTags string from SmolDocling
+            image_size: (width, height) of the image
+
+        Returns:
+            Dict with parsed layout information
+        """
+        try:
+            import re
+
+            text_blocks = []
+
+            # DocTags format includes location tags like <loc_x><loc_y><loc_x2><loc_y2>
+            # Extract location-based text blocks
+            loc_pattern = r'<loc_(\d+)><loc_(\d+)><loc_(\d+)><loc_(\d+)>([^<]*)'
+            loc_matches = re.findall(loc_pattern, doctags)
+
+            for match in loc_matches:
+                x1, y1, x2, y2, text = match
+                if text.strip():  # Only add non-empty text
+                    text_blocks.append({
+                        'text': text.strip(),
+                        'bbox': {
+                            'x': int(x1),
+                            'y': int(y1),
+                            'width': int(x2) - int(x1),
+                            'height': int(y2) - int(y1)
+                        },
+                        'type': 'text',
+                        'confidence': 0.9
+                    })
+
+            # Extract text from common DocTags elements without location
+            tag_patterns = [
+                (r'<text[^>]*>([^<]+)</text>', 'text'),
+                (r'<title[^>]*>([^<]+)</title>', 'title'),
+                (r'<heading[^>]*>([^<]+)</heading>', 'heading'),
+                (r'<paragraph[^>]*>([^<]+)</paragraph>', 'paragraph'),
+            ]
+
+            for pattern, element_type in tag_patterns:
+                matches = re.findall(pattern, doctags, re.IGNORECASE)
+                for i, text in enumerate(matches):
+                    if text.strip():
+                        # For non-located text, create approximate bounding boxes
+                        text_blocks.append({
+                            'text': text.strip(),
+                            'bbox': {
+                                'x': 50,
+                                'y': 50 + (len(text_blocks) * 30),
+                                'width': image_size[0] - 100,
+                                'height': 25
+                            },
+                            'type': element_type,
+                            'confidence': 0.7
+                        })
+
+            logger.info(
+                "DocTags parsing completed",
+                total_blocks=len(text_blocks),
+                doctags_length=len(doctags)
+            )
+
+            return {
+                'text_blocks': text_blocks,
+                'image_size': image_size,
+                'extraction_method': 'smoldocling_doctags',
+                'raw_response': doctags,
+                'doctags': doctags,
+                'page_dimensions': {
+                    'width': image_size[0],
+                    'height': image_size[1]
+                }
+            }
+
+        except Exception as e:
+            logger.error("Failed to parse DocTags", error=str(e), doctags_preview=doctags[:200])
+            return self._create_fallback_layout(image_size)
+
     def is_available(self) -> bool:
         """Check if SmolDocling is available"""
         return TRANSFORMERS_AVAILABLE

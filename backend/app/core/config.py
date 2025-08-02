@@ -35,13 +35,19 @@ class Settings(BaseSettings):
     database_pool_size: int = Field(default=10, env="DATABASE_POOL_SIZE")
     database_max_overflow: int = Field(default=20, env="DATABASE_MAX_OVERFLOW")
     
-    # OpenAI Configuration
+    # AI Model Configuration
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
     openai_model_text: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL_TEXT")
     openai_model_vision: str = Field(default="gpt-4o", env="OPENAI_MODEL_VISION")
     openai_max_tokens: int = Field(default=4000, env="OPENAI_MAX_TOKENS")
     openai_temperature: float = Field(default=0.25, env="OPENAI_TEMPERATURE")
     openai_timeout: int = Field(default=60, env="OPENAI_TIMEOUT")
+
+    # Anthropic Configuration (Claude 3.5 Sonnet)
+    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
+
+    # Mistral Configuration (OCR and layout analysis)
+    mistral_api_key: Optional[str] = Field(default=None, env="MISTRAL_API_KEY")
     
     # Blob Storage Configuration
     blob_read_write_token: Optional[str] = Field(default=None, env="BLOB_READ_WRITE_TOKEN")
@@ -110,9 +116,12 @@ class Settings(BaseSettings):
     @field_validator("openai_api_key")
     @classmethod
     def validate_openai_key(cls, v):
-        """Validate OpenAI API key format"""
+        """Validate OpenAI API key format (local dev requires standard 'sk-' user key, not project keys)"""
+        if not isinstance(v, str) or not v:
+            raise ValueError("OpenAI API key is required and must be a non-empty string")
         if not v.startswith("sk-"):
-            raise ValueError("OpenAI API key must start with 'sk-'")
+            # Project keys often start with sk-proj- and are unsupported here for local dev
+            raise ValueError("OpenAI API key must start with 'sk-' (standard user key). Project keys like 'sk-proj-' are not supported for local development.")
         return v
 
     @field_validator("cors_origins", mode="before")
@@ -158,6 +167,11 @@ class Settings(BaseSettings):
     def job_timeout_seconds(self) -> int:
         """Convert job timeout to seconds"""
         return self.job_timeout_minutes * 60
+
+    @property
+    def base_url(self) -> str:
+        """Get the base URL for the API"""
+        return f"http://{self.host}:{self.port}"
     
     def get_openai_config(self) -> dict:
         """Get OpenAI configuration dictionary"""
@@ -220,26 +234,62 @@ class TestSettings(Settings):
 
 def get_settings() -> Settings:
     """
-    Get application settings based on environment
-    
-    Returns:
-        Settings: Configured settings instance
+    Get application settings based on environment.
+
+    Adds development safeguards to avoid ambient OPENAI_API_KEY overriding .env.
+    Logs non-sensitive diagnostics about ambient vs resolved keys.
     """
     environment = os.getenv("ENVIRONMENT", "development").lower()
-    
-    if environment in ("production", "prod"):
-        settings = ProductionSettings()
-    elif environment in ("test", "testing"):
-        settings = TestSettings()
-    else:
-        settings = DevelopmentSettings()
-    
-    logger.info("Settings loaded", 
-               environment=settings.environment,
-               debug=settings.debug,
-               app_name=settings.app_name)
-    
-    return settings
+
+    # Pre-check ambient OpenAI var
+    ambient_key = os.environ.get("OPENAI_API_KEY")
+    logger.info(
+        "Env pre-check for OPENAI_API_KEY",
+        ambient_present=bool(ambient_key),
+        ambient_prefix=(ambient_key[:5] + "***") if ambient_key else "none",
+        environment=environment,
+    )
+
+    # In development, prefer .env by temporarily unsetting ambient OPENAI_API_KEY
+    restore_ambient = False
+    saved_ambient_value = None
+    try:
+        if environment in ("development", "dev") and ambient_key:
+            restore_ambient = True
+            saved_ambient_value = ambient_key
+            del os.environ["OPENAI_API_KEY"]
+            logger.warning("Temporarily unsetting ambient OPENAI_API_KEY to prefer .env in development")
+
+        if environment in ("production", "prod"):
+            settings = ProductionSettings()
+        elif environment in ("test", "testing"):
+            settings = TestSettings()
+        else:
+            settings = DevelopmentSettings()
+
+        # Post-load diagnostic
+        resolved_key = getattr(settings, "openai_api_key", None)
+        logger.info(
+            "Settings resolved OPENAI_API_KEY",
+            resolved_present=bool(resolved_key),
+            resolved_prefix=(resolved_key[:5] + "***") if resolved_key else "none",
+        )
+
+        logger.info(
+            "Settings loaded",
+            environment=settings.environment,
+            debug=settings.debug,
+            app_name=settings.app_name,
+            openai_key_present=bool(settings.openai_api_key),
+            openai_key_prefix=(settings.openai_api_key[:5] + "***") if settings.openai_api_key else "none",
+            openai_model_text=settings.openai_model_text,
+            openai_timeout=settings.openai_timeout
+        )
+        return settings
+    finally:
+        if restore_ambient:
+            os.environ["OPENAI_API_KEY"] = saved_ambient_value
+            logger.warning("Restored ambient OPENAI_API_KEY after settings load")
 
 
 # Global settings instance
@@ -270,17 +320,21 @@ def validate_required_settings():
 
 def log_settings_summary():
     """Log a summary of current settings (without sensitive data)"""
-    logger.info("Application configuration summary",
-               app_name=settings.app_name,
-               environment=settings.environment,
-               debug=settings.debug,
-               host=settings.host,
-               port=settings.port,
-               openai_model_text=settings.openai_model_text,
-               openai_model_vision=settings.openai_model_vision,
-               max_file_size_mb=settings.max_file_size_mb,
-               max_concurrent_jobs=settings.max_concurrent_jobs,
-               blob_storage_enabled=bool(settings.blob_read_write_token))
+    logger.info(
+        "Application configuration summary",
+        app_name=settings.app_name,
+        environment=settings.environment,
+        debug=settings.debug,
+        host=settings.host,
+        port=settings.port,
+        openai_model_text=settings.openai_model_text,
+        openai_model_vision=settings.openai_model_vision,
+        openai_timeout=settings.openai_timeout,
+        openai_key_present=bool(settings.openai_api_key),
+        max_file_size_mb=settings.max_file_size_mb,
+        max_concurrent_jobs=settings.max_concurrent_jobs,
+        blob_storage_enabled=bool(settings.blob_read_write_token)
+    )
 
 
 # Validate settings on import

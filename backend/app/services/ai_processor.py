@@ -20,18 +20,109 @@ class AIProcessor:
     def __init__(self, openai_api_key: str):
         self.api_key = openai_api_key
         self.client = None
+        # Default values will be overridden if config is available
         self.model_text = "gpt-4o-mini"
+        self.timeout = 60.0
         self.fallback_mode = False
+        # Track fallback usage for metadata
+        self.used_fallback_resume = False
+        self.used_fallback_cover_letter = False
+        # Non-sensitive diagnostic
+        logger.info(
+            "AIProcessor init",
+            openai_key_present=bool(openai_api_key),
+            openai_key_prefix=(openai_api_key[:5] + "***") if openai_api_key else "none",
+            model_text=self.model_text,
+            timeout=self.timeout,
+        )
 
-        # Simple, proven prompts from reference.md
-        self.SYS_RESUME = """You are an expert résumé writer who beats ATS.
-Rewrite the résumé below so it mirrors the job description keywords while remaining truthful.
-Return ONLY plain Markdown (no ```markdown fence).
-Keep sections: Summary, Skills, Experience, Education, etc.
-Make every bullet start with action verbs and quantify impact."""
+        # Check for placeholder/invalid API key
+        if (
+            not openai_api_key
+            or openai_api_key.startswith('sk-test-placeholder')
+            or openai_api_key == 'your-openai-api-key-here'
+        ):
+            logger.warning("OpenAI API key is not configured properly. Using fallback mode.")
+            self.fallback_mode = True
 
-        self.SYS_COVER = """Write a concise 250-word cover letter in Markdown that matches the résumé and job description.
-Return ONLY the letter body (no salutation block)."""
+        # Expert-level system prompts for professional resume optimization
+        self.SYS_RESUME = """You are an elite resume optimization expert with 15+ years of experience helping candidates land roles at Fortune 500 companies. Your expertise includes ATS optimization, executive recruiting, and industry-specific resume strategies.
+
+**CORE MISSION**: Transform the provided resume to maximize ATS compatibility and human appeal while maintaining 100% truthfulness.
+
+**ATS OPTIMIZATION REQUIREMENTS**:
+- Mirror job description keywords naturally throughout all sections
+- Use exact terminology from the job posting when applicable
+- Include industry-standard skill names and certifications
+- Optimize for keyword density without stuffing
+- Use ATS-friendly formatting (clear headers, bullet points, standard fonts)
+
+**CONTENT ENHANCEMENT STRATEGY**:
+- Start every bullet point with powerful action verbs (Led, Developed, Implemented, Optimized, etc.)
+- Quantify ALL achievements with specific metrics (%, $, #, timeframes)
+- Use the STAR method (Situation, Task, Action, Result) for experience bullets
+- Highlight transferable skills that match job requirements
+- Include relevant technical skills, tools, and methodologies mentioned in job description
+
+**SECTION OPTIMIZATION**:
+- **Professional Summary**: 3-4 lines highlighting most relevant qualifications and achievements
+- **Core Competencies/Skills**: Prioritize skills mentioned in job description
+- **Professional Experience**: Focus on accomplishments over responsibilities
+- **Education**: Include relevant coursework, projects, or certifications if applicable
+- **Additional Sections**: Add relevant sections (Certifications, Projects, Publications) if they strengthen candidacy
+
+**CRITICAL FORMATTING REQUIREMENTS**:
+- Return ONLY clean Markdown format - NO HTML tags whatsoever
+- Use **bold** for emphasis - NEVER use <b> or </b> tags
+- Use *italic* for emphasis - NEVER use <i> or </i> tags
+- Use consistent bullet point formatting with hyphens (-)
+- Maintain professional section hierarchy (# ## ###)
+- Ensure proper spacing and readability
+- Keep total length appropriate for experience level (1-2 pages equivalent)
+- ABSOLUTELY NO HTML TAGS - only pure Markdown syntax
+- If you use any HTML tags like <b>, <i>, <strong>, <em>, the output will fail
+
+**QUALITY STANDARDS**:
+- Every statement must be truthful and verifiable
+- Language should be professional and confident
+- Eliminate redundancy and weak language
+- Ensure grammatical perfection and consistent tense usage
+- Tailor content specifically to the target role and industry
+
+Transform the resume to be irresistible to both ATS systems and hiring managers."""
+
+        self.SYS_COVER = """You are an expert cover letter writer specializing in executive-level business correspondence. Your letters consistently help candidates secure interviews at top-tier companies.
+
+**OBJECTIVE**: Create a compelling, professional cover letter that demonstrates perfect alignment between the candidate's background and the target role.
+
+**STRUCTURE REQUIREMENTS**:
+- **Opening Paragraph**: Strong hook that immediately establishes relevance and enthusiasm
+- **Body Paragraph 1**: Highlight 2-3 most relevant achievements with specific metrics
+- **Body Paragraph 2**: Demonstrate knowledge of company/role and explain mutual fit
+- **Closing Paragraph**: Professional call-to-action with confidence and gratitude
+
+**CONTENT STRATEGY**:
+- Mirror key terminology from job description naturally
+- Showcase quantified achievements that directly relate to role requirements
+- Demonstrate research about the company and position
+- Convey genuine enthusiasm and cultural fit
+- Address any potential concerns proactively
+- Use confident, professional tone throughout
+
+**WRITING STANDARDS**:
+- Length: 250-300 words maximum
+- Tone: Professional, confident, and engaging
+- Language: Clear, concise, and error-free
+- Format: Clean business letter structure in Markdown
+- Flow: Logical progression with smooth transitions
+
+**FORMATTING REQUIREMENTS**:
+- Return ONLY the letter body in Markdown format
+- Use proper paragraph breaks for readability
+- No salutation or signature blocks (body content only)
+- Professional formatting with appropriate emphasis
+
+Create a cover letter that compels the hiring manager to immediately schedule an interview."""
 
         self._initialize_client_with_strategies()
 
@@ -41,6 +132,27 @@ Return ONLY the letter body (no salutation block)."""
             logger.error("No OpenAI API key provided")
             self.fallback_mode = True
             return
+        # Ensure no ambient env var overrides the provided key during client use
+        try:
+            import os
+            if os.environ.get("OPENAI_API_KEY") and os.environ["OPENAI_API_KEY"] != self.api_key:
+                logger.warning("Ambient OPENAI_API_KEY differs from provided key; using provided key explicitly")
+        except Exception:
+            pass
+        # Try to import config for dynamic model/timeout settings
+        try:
+            from app.core.config import settings  # deferred import to avoid cycles at module import time
+            if settings.openai_model_text:
+                self.model_text = settings.openai_model_text
+            if settings.openai_timeout:
+                self.timeout = float(settings.openai_timeout)
+            logger.info(
+                "AIProcessor config applied",
+                model_text=self.model_text,
+                timeout=self.timeout,
+            )
+        except Exception as e:
+            logger.warning("Could not import settings for AIProcessor, using defaults", error=str(e))
 
         strategies = [
             self._strategy_basic,
@@ -59,11 +171,23 @@ Return ONLY the letter body (no salutation block)."""
         logger.error("All OpenAI initialization strategies failed, using fallback mode")
         self.fallback_mode = True
 
+    def get_processing_metadata(self) -> dict:
+        """Get metadata about AI processing including fallback usage"""
+        return {
+            "fallback_mode_enabled": self.fallback_mode,
+            "used_fallback_resume": self.used_fallback_resume,
+            "used_fallback_cover_letter": self.used_fallback_cover_letter,
+            "openai_model_text": self.model_text,
+            "openai_timeout": self.timeout,
+            "client_initialized": self.client is not None
+        }
+
     def _strategy_basic(self):
         """Basic OpenAI client initialization"""
         try:
             from openai import OpenAI
-            return OpenAI(api_key=self.api_key)
+            # Explicitly pass api_key param to avoid SDK reading any ambient OPENAI_API_KEY
+            return OpenAI(api_key=self.api_key, timeout=self.timeout)
         except ImportError:
             raise Exception("OpenAI library not available")
 
@@ -71,7 +195,8 @@ Return ONLY the letter body (no salutation block)."""
         """OpenAI client with extended timeout"""
         try:
             from openai import OpenAI
-            return OpenAI(api_key=self.api_key, timeout=60.0)
+            # Add slight buffer to configured timeout and force explicit key usage
+            return OpenAI(api_key=self.api_key, timeout=max(self.timeout, 60.0))
         except ImportError:
             raise Exception("OpenAI library not available")
 
@@ -79,7 +204,8 @@ Return ONLY the letter body (no salutation block)."""
         """Minimal OpenAI client configuration"""
         try:
             from openai import OpenAI
-            return OpenAI(api_key=self.api_key, max_retries=1)
+            # Force explicit key usage; minimal retries
+            return OpenAI(api_key=self.api_key, max_retries=1, timeout=self.timeout)
         except ImportError:
             raise Exception("OpenAI library not available")
     
@@ -88,14 +214,31 @@ Return ONLY the letter body (no salutation block)."""
         Simple resume optimization using proven prompts from reference.md
         Returns optimized resume in markdown format
         """
+        # Diagnostic logging for fallback detection
+        logger.info(
+            "Resume optimization starting",
+            fallback_mode=self.fallback_mode,
+            client_initialized=self.client is not None,
+            model_text=self.model_text
+        )
+
         if self.fallback_mode or self.client is None:
             logger.warning("Using fallback optimization (OpenAI not available)")
+            self.used_fallback_resume = True
             return self._create_fallback_optimized_resume(resume_text, job_description)
 
         try:
             return await self._openai_optimize_resume(resume_text, job_description)
         except Exception as e:
-            logger.warning(f"OpenAI optimization failed: {e}, using fallback")
+            # Classify 401 to make debugging clearer
+            msg = str(e)
+            auth_error = "401" in msg or "invalid_api_key" in msg or "Incorrect API key provided" in msg
+            logger.warning(
+                "OpenAI optimization failed, using fallback",
+                error=msg,
+                is_auth_error=auth_error
+            )
+            self.used_fallback_resume = True
             return self._create_fallback_optimized_resume(resume_text, job_description)
 
     async def _openai_optimize_resume(self, resume_text: str, job_description: str) -> str:
@@ -103,6 +246,7 @@ Return ONLY the letter body (no salutation block)."""
         prompt = f"Job Description:\n{job_description}\n\nCurrent Résumé:\n{resume_text}"
 
         start_time = time.time()
+        # Use explicit API key; guard against SDK reading ambient env by passing api_key in client construction (already done)
         response = await asyncio.to_thread(
             self.client.chat.completions.create,
             model=self.model_text,
@@ -111,7 +255,7 @@ Return ONLY the letter body (no salutation block)."""
                 {"role": "user", "content": prompt}
             ],
             temperature=0.25,
-            max_tokens=2000
+            max_tokens=3000
         )
 
         processing_time = time.time() - start_time
@@ -132,14 +276,30 @@ Return ONLY the letter body (no salutation block)."""
         Generate cover letter using proven prompts from reference.md
         Returns cover letter in markdown format
         """
+        # Diagnostic logging for fallback detection
+        logger.info(
+            "Cover letter generation starting",
+            fallback_mode=self.fallback_mode,
+            client_initialized=self.client is not None,
+            model_text=self.model_text
+        )
+
         if self.fallback_mode or self.client is None:
             logger.warning("Using fallback cover letter (OpenAI not available)")
+            self.used_fallback_cover_letter = True
             return self._create_fallback_cover_letter(resume_markdown, job_description)
 
         try:
             return await self._openai_generate_cover_letter(resume_markdown, job_description, job_title, company_name)
         except Exception as e:
-            logger.warning(f"OpenAI cover letter generation failed: {e}, using fallback")
+            msg = str(e)
+            auth_error = "401" in msg or "invalid_api_key" in msg or "Incorrect API key provided" in msg
+            logger.warning(
+                "OpenAI cover letter generation failed, using fallback",
+                error=msg,
+                is_auth_error=auth_error
+            )
+            self.used_fallback_cover_letter = True
             return self._create_fallback_cover_letter(resume_markdown, job_description)
 
     async def _openai_generate_cover_letter(self, resume_markdown: str, job_description: str, job_title: Optional[str], company_name: Optional[str]) -> str:

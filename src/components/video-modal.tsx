@@ -1,4 +1,7 @@
+"use client";
+
 import { createPortal } from "react-dom";
+import { useEffect, useState } from "react";
 
 type PropsType = {
   isOpen: boolean;
@@ -15,7 +18,13 @@ type PropsType = {
 );
 
 export default function VideoModal({ isOpen, onClose, ...props }: PropsType) {
-  if (!isOpen) return null;
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!isOpen || !mounted) return null;
 
   let src = "";
 
